@@ -1,0 +1,4 @@
+dataset/
+*.csv
+vendor_env/
+__pycache__/
