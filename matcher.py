@@ -1,17 +1,5 @@
 """
-matcher.py — Vendor matching against a sampled master database.
-
-Architecture (100 K-row subset)
--------------------------------
-1.  **Load & sample** — read only ``nrows`` rows from the CSV.
-2.  **Pre-clean** — vectorised cleaning of name + domain columns at init.
-3.  **Domain index** — ``dict[str, list[int]]`` for O(1) exact-domain lookup.
-4.  **Query pipeline** per incoming payload:
-        Stage 1 — Collect candidates via domain-index hit  *and*
-                  ``rapidfuzz.process.extract`` on clean names (top 200).
-        Stage 2 — Score every candidate with a composite formula
-                  (token-sort 40 % + partial-ratio 20 % + domain 40 %).
-        Stage 3 — Return top K, sorted by composite score.
+matcher.py — Intelligent Vendor Matching via Fuzzy Algorithms and Semantic Vectors.
 """
 
 from __future__ import annotations
@@ -19,12 +7,16 @@ from __future__ import annotations
 import pandas as pd
 from collections import defaultdict
 from rapidfuzz import fuzz, process
+import torch
+from sentence_transformers import SentenceTransformer, util
 
-from cleaner import clean_company_name, extract_root_domain, normalize_country, clean_record
+from cleaner import (
+    clean_company_name,
+    extract_root_domain,
+    normalize_country,
+    clean_record,
+)
 
-# ---------------------------------------------------------------------------
-# CSV column mapping  (actual columns in novo_vendor_master.csv)
-# ---------------------------------------------------------------------------
 _CSV_FIELD_MAP = {
     "name": "name",
     "website": "website",
@@ -33,32 +25,32 @@ _CSV_FIELD_MAP = {
 
 
 class AlgorithmicMatcher:
-    """Fast, indexed vendor matcher for a sampled master database."""
+    """Hybrid vendor matcher combining RapidFuzz string metrics with NLP embeddings."""
 
     def __init__(
         self,
         master_db_path: str = "novo_vendor_master.csv",
         nrows: int = 100_000,
+        model_name: str = "all-MiniLM-L6-v2",
     ):
-        print(f"[matcher] Loading first {nrows:,} rows from {master_db_path} …")
+        print(f"[matcher] Loading master database ({nrows:,} rows) …")
         self.master_df = pd.read_csv(
             master_db_path,
             nrows=nrows,
-            dtype=str,                
-            keep_default_na=False,      
-        )
-        print("[matcher] Cleaning names & domains …")
-        self.master_df["clean_name"] = (
-            self.master_df["name"].apply(clean_company_name)
-        )
-        self.master_df["clean_domain"] = (
-            self.master_df["website"].apply(extract_root_domain)
-        )
-        self.master_df["clean_country"] = (
-            self.master_df["country_code"].apply(normalize_country)
+            dtype=str,
+            keep_default_na=False,
         )
 
-        print("[matcher] Building domain index …")
+        print("[matcher] Cleaning and normalizing master records …")
+        self.master_df["clean_name"] = self.master_df["name"].apply(clean_company_name)
+        self.master_df["clean_domain"] = self.master_df["website"].apply(
+            extract_root_domain
+        )
+        self.master_df["clean_country"] = self.master_df["country_code"].apply(
+            normalize_country
+        )
+
+        print("[matcher] Building O(1) domain index …")
         self._domain_index: dict[str, list[int]] = defaultdict(list)
         for idx, domain in enumerate(self.master_df["clean_domain"]):
             if domain:
@@ -66,7 +58,14 @@ class AlgorithmicMatcher:
 
         self._name_list: list[str] = self.master_df["clean_name"].tolist()
 
-        print(f"[matcher] Ready — {len(self.master_df):,} vendors indexed.\n")
+        print(f"[matcher] Initializing Semantic AI Model ({model_name}) …")
+        self.model = SentenceTransformer(model_name)
+        # Pre-compute vectors for the entire database at startup for fast query times
+        self.name_embeddings = self.model.encode(
+            self._name_list, convert_to_tensor=True
+        )
+
+        print(f"[matcher] System ready — {len(self.master_df):,} vendors indexed.\n")
 
     def find_candidates(
         self,
@@ -74,17 +73,7 @@ class AlgorithmicMatcher:
         top_k: int = 5,
         name_candidates: int = 200,
     ) -> list[dict]:
-        """Return the *top_k* best-matching vendors for *input_payload*.
-
-        Parameters
-
-        input_payload : dict
-            Must contain at least ``name``; optionally ``website`` and ``country``.
-        top_k : int
-            How many results to return.
-        name_candidates : int
-            How many rough candidates to pull from the name-similarity stage.
-        """
+        """Return the top_k best-matching vendors using multi-signal scoring."""
         cleaned = clean_record(input_payload)
         target_name = cleaned["clean_name"]
         target_domain = cleaned["clean_domain"]
@@ -93,28 +82,35 @@ class AlgorithmicMatcher:
         if not target_name and not target_domain:
             return []
 
+        # 1. Fast Candidate Blocking
         domain_hits: set[int] = set()
         if target_domain and target_domain in self._domain_index:
             domain_hits = set(self._domain_index[target_domain])
 
         name_hits: set[int] = set()
         if target_name:
-            # process.extract returns list of (match, score, index)
+            # fuzz.WRatio handles case, length differences, and substring matches better than token_sort_ratio
             fuzzy_results = process.extract(
                 target_name,
                 self._name_list,
-                scorer=fuzz.token_sort_ratio,
+                scorer=fuzz.WRatio,
                 limit=name_candidates,
-                score_cutoff=40,        # ignore very weak matches
+                score_cutoff=50,
             )
             name_hits = {idx for _, _, idx in fuzzy_results}
 
-        # Union of candidates from both stages
-        candidate_indices = domain_hits | name_hits
+        candidate_indices = list(domain_hits | name_hits)
         if not candidate_indices:
             return []
 
-        # Stage 2: Detailed scoring
+        # 2. Compute Target Vector
+        target_embedding = (
+            self.model.encode([target_name], convert_to_tensor=True)
+            if target_name
+            else None
+        )
+
+        # 3. Deep Scoring Execution
         results: list[dict] = []
         for idx in candidate_indices:
             row = self.master_df.iloc[idx]
@@ -122,37 +118,62 @@ class AlgorithmicMatcher:
             row_domain = row["clean_domain"]
             row_country = row["clean_country"]
 
-            # Name score  (token-sort 65 % + partial-ratio 35 %)
-            token_sort = fuzz.token_sort_ratio(target_name, row_name) if target_name else 0.0
-            partial = fuzz.partial_ratio(target_name, row_name) if target_name else 0.0
-            name_score = token_sort * 0.65 + partial * 0.35
+            # A. Advanced String Similarities
+            if target_name and row_name:
+                # token_set_ratio perfectly aligns strings with extra trailing/leading words
+                set_score = fuzz.token_set_ratio(target_name, row_name)
+                # WRatio anchors formatting shifts and general character alignments
+                w_score = fuzz.WRatio(target_name, row_name)
+                algorithmic_name_score = (set_score * 0.6) + (w_score * 0.4)
 
-            # Domain score
+                # B. Semantic Vector Similarity
+                row_embedding = self.name_embeddings[idx].unsqueeze(0)
+                semantic_score = (
+                    util.cos_sim(target_embedding, row_embedding).item() * 100.0
+                )
+
+                # Use semantic score if it detects an acronym/alias the string logic missed
+                final_name_score = max(algorithmic_name_score, semantic_score)
+            else:
+                final_name_score = 0.0
+                algorithmic_name_score = 0.0
+                semantic_score = 0.0
+
+            # C. Domain Scoring
             if target_domain and row_domain:
-                domain_score = 100.0 if target_domain == row_domain else fuzz.ratio(target_domain, row_domain)
+                domain_score = (
+                    100.0
+                    if target_domain == row_domain
+                    else fuzz.ratio(target_domain, row_domain)
+                )
             else:
                 domain_score = 0.0
 
-            # Country bonus / penalty
-            country_bonus = 0.0
+            # D. Proportional Country Penalty
+            country_multiplier = 1.0
             if target_country and row_country:
-                country_bonus = 5.0 if target_country == row_country else -2.0
+                if target_country != row_country:
+                    country_multiplier = 0.85  # 15% penalty for differing countries
 
-            # Composite  (55 % name, 40 % domain, 5 % country)
-            composite = (name_score * 0.55) + (domain_score * 0.40) + country_bonus
+            # E. Final Composite Score
+            base_score = (final_name_score * 0.55) + (domain_score * 0.45)
+            composite = base_score * country_multiplier
 
-            results.append({
-                "handle": row["handle"],
-                "name": row["name"],
-                "website": row["website"],
-                "country_code": row["country_code"],
-                "industry": row.get("industry", ""),
-                "city": row.get("city", ""),
-                "composite_score": round(composite, 2),
-                "name_score": round(name_score, 2),
-                "domain_score": round(domain_score, 2),
-            })
+            results.append(
+                {
+                    "vendor_id": row.get("handle", f"VN-{idx}"),
+                    "name": row["name"],
+                    "website": row.get("website", ""),
+                    "country_code": row.get("country_code", ""),
+                    "industry": row.get("industry", ""),
+                    "city": row.get("city", ""),
+                    "composite_score": round(composite, 2),
+                    "name_score": round(final_name_score, 2),
+                    "semantic_score": round(semantic_score, 2),
+                    "fuzzy_score": round(algorithmic_name_score, 2),
+                    "domain_score": round(domain_score, 2),
+                }
+            )
 
-        # ── Sort and return top K ────────────────────────────────────────
         results.sort(key=lambda r: r["composite_score"], reverse=True)
         return results[:top_k]
