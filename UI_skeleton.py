@@ -1,7 +1,20 @@
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 1. Force load the .env file FIRST (before importing agent.py)
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
+
+# Debug check: This will print your endpoint or 'None' to your terminal
+print("DEBUG - Loading .env from:", env_path)
+print("DEBUG - Endpoint value:", os.environ.get("AZURE_OPENAI_ENDPOINT"))
+
+# 2. NOW import Streamlit and your modules
 import streamlit as st
 import pandas as pd
 import time
-import os
+// 
 
 from matcher import AlgorithmicMatcher
 from agent import run_validation
