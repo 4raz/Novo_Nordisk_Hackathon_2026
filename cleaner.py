@@ -76,6 +76,17 @@ _LEGAL_SUFFIXES = [
     "pte",
     "bhd",
     "sdn",
+    # Generic Descriptors
+    "industries",
+    "industry",
+    "group",
+    "technologies",
+    "tech",
+    "enterprises",
+    "solutions",
+    "services",
+    "holdings",
+    "partners",
 ]
 
 LEGAL_SUFFIX_REGEX = re.compile(

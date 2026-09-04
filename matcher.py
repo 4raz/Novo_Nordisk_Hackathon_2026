@@ -145,11 +145,15 @@ class AlgorithmicMatcher:
 
             # C. Domain Scoring
             if target_domain and row_domain:
-                domain_score = (
-                    100.0
-                    if target_domain == row_domain
-                    else fuzz.ratio(target_domain, row_domain)
-                )
+                if target_domain == row_domain:
+                    domain_score = 100.0
+                else:
+                    # Strip the TLD (.com, .net) to prevent artificial overlap
+                    target_base = target_domain.split(".")[0]
+                    row_base = row_domain.split(".")[0]
+
+                    # Apply a severe multiplier penalty; mismatched domains strongly suggest distinct entities
+                    domain_score = fuzz.ratio(target_base, row_base) * 0.5
             else:
                 domain_score = 0.0
 
