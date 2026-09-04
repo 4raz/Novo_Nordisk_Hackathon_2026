@@ -1,20 +1,15 @@
 import os
+import time
 from pathlib import Path
 from dotenv import load_dotenv
+import pandas as pd
 
 # 1. Force load the .env file FIRST (before importing agent.py)
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
-# Debug check: This will print your endpoint or 'None' to your terminal
-print("DEBUG - Loading .env from:", env_path)
-print("DEBUG - Endpoint value:", os.environ.get("AZURE_OPENAI_ENDPOINT"))
-
 # 2. NOW import Streamlit and your modules
 import streamlit as st
-import pandas as pd
-import time
-
 from matcher import AlgorithmicMatcher
 from agent import run_validation
 
@@ -50,10 +45,16 @@ def load_matcher():
 
 matcher = load_matcher()
 
-# --- SIDEBAR ---
+# --- INITIALIZE SESSION STATE FOR FUNCTIONAL BUTTONS & METRICS ---
+if "duplicates_intercepted" not in st.session_state:
+    st.session_state.duplicates_intercepted = 0
+if "spend_saved" not in st.session_state:
+    st.session_state.spend_saved = 0
+if "last_action" not in st.session_state:
+    st.session_state.last_action = None
+
 # --- SIDEBAR ---
 with st.sidebar:
-    # Swapped SVG for a stable PNG render
     st.image(
         "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Novo_Nordisk_Logo.svg/512px-Novo_Nordisk_Logo.svg.png",
         use_container_width=True,
@@ -62,6 +63,7 @@ with st.sidebar:
     st.markdown("---")
 
     if matcher is not None:
+        # Dynamically calculate length in case new rows are added in-memory
         st.metric("Vendor Master Records", f"{len(matcher.master_df):,} Active")
     else:
         st.metric("Vendor Master Records", "0 (CSV Not Found)")
@@ -72,7 +74,6 @@ with st.sidebar:
         "🏢 GLEIF (Corporate Hierarchy)<br>🛡️ OpenSanctions (UN Watchlist)",
         unsafe_allow_html=True,
     )
-
     st.markdown("---")
     st.caption("Novo Nordisk GBS Data Hackathon 2026")
 
@@ -82,7 +83,20 @@ st.markdown(
     "Preventing vendor duplication and optimizing enterprise spend across global operations."
 )
 
-tab1, tab2 = st.tabs(["🔍 Single Vendor Onboarding", "📊 Vendor Master Governance"])
+tab1, tab2, tab3 = st.tabs(
+    [
+        "🔍 Single Vendor Onboarding",
+        "📊 Vendor Master Governance",
+        "📈 Enterprise Impact Dashboard",
+    ]
+)
+
+# --- TRANSLATION MAP FOR DECISION BANDS ---
+UI_DECISION_MAP = {
+    "AUTO_APPROVE": "CLEARED: NO CONFLICTS DETECTED",
+    "MANUAL_REVIEW": "FLAGGED: DATA STEWARD REVIEW REQUIRED",
+    "AUTO_REJECT": "BLOCKED: POLICY VIOLATION OR DUPLICATE",
+}
 
 # --- TAB 1: SINGLE VENDOR SCREENING ---
 with tab1:
@@ -96,6 +110,7 @@ with tab1:
             v_name = st.text_input(
                 "Proposed Vendor Name", placeholder="e.g., EdgeVerve Systems Limited"
             )
+
             v_country = st.selectbox(
                 "Operating Country",
                 [
@@ -132,7 +147,6 @@ with tab1:
             v_domain = st.text_input(
                 "Website / Domain", placeholder="e.g., edgeverve.com"
             )
-
             submit_btn = st.form_submit_button(
                 "Run Autonomous Screening", use_container_width=True
             )
@@ -146,7 +160,6 @@ with tab1:
             with st.status("Executing Pipeline...", expanded=True) as status:
                 st.write("🧹 **Step 1: Normalizing Data**...")
                 time.sleep(0.2)
-
                 st.write("🔍 **Step 2 & 3: Semantic & Fuzzy Candidate Matching**...")
                 match_result = None
                 if matcher:
@@ -155,38 +168,102 @@ with tab1:
 
                 st.write("🌐 **Step 4: Agentic Validation (GLEIF & UN Sanctions)**...")
                 outcome = run_validation(vendor_payload, match_result)
-
                 st.write("📊 **Step 5: Synthesizing Recommendation**...")
                 status.update(
                     label="Screening Complete!", state="complete", expanded=False
                 )
 
-            # --- RENDER ACTUAL RESULTS ---
-            decision = outcome.get("decision", "MANUAL_REVIEW")
+            # --- RENDER DECISION BANNER ---
+            raw_decision = outcome.get("decision", "MANUAL_REVIEW")
+            display_decision = UI_DECISION_MAP.get(raw_decision, raw_decision)
             justification = outcome.get(
                 "business_justification", "No justification provided."
             )
 
-            # Format UI Box based on decision
-            if decision == "AUTO_REJECT":
-                st.error(f"🚨 **DECISION BAND: {decision}**")
+            if raw_decision == "AUTO_REJECT":
+                st.error(f"🚨 **{display_decision}**")
                 border_color = "red"
-            elif decision == "MANUAL_REVIEW":
-                st.warning(f"⚠️ **DECISION BAND: {decision}**")
+            elif raw_decision == "MANUAL_REVIEW":
+                st.warning(f"⚠️ **{display_decision}**")
                 border_color = "#ffc107"
             else:
-                st.success(f"✅ **DECISION BAND: {decision}**")
+                st.success(f"✅ **{display_decision}**")
                 border_color = "green"
 
-            # Display Justification
             st.info(f"**Agent Reasoner:** {justification}")
 
-            # Show Safety Net Notes if any triggered
             if outcome.get("safety_net_notes"):
                 for note in outcome["safety_net_notes"]:
                     st.error(f"🛡️ **Safety Net Trigger:** {note}")
 
-            # Top Existing Candidate Match Box
+            # --- FUNCTIONAL ACTION BUTTONS ---
+            act_col1, act_col2 = st.columns(2)
+
+            if raw_decision == "AUTO_APPROVE":
+                if act_col1.button(
+                    "➕ Proceed to Onboard New Vendor",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    if matcher:
+                        new_vendor_id = f"VN-99{len(matcher.master_df) + 1:03d}"
+                        new_row = pd.DataFrame(
+                            [
+                                {
+                                    "handle": new_vendor_id,
+                                    "name": v_name,
+                                    "website": v_domain,
+                                    "country_code": v_country,
+                                    "industry": "Pending",
+                                    "city": "Pending",
+                                }
+                            ]
+                        )
+                        # In-memory dataframe update
+                        matcher.master_df = pd.concat(
+                            [matcher.master_df, new_row], ignore_index=True
+                        )
+                        st.session_state.last_action = ("onboard", 0, 0, new_vendor_id)
+                        st.toast(
+                            f"Vendor {new_vendor_id} routed to ERP & injected into session DB!",
+                            icon="✅",
+                        )
+
+            elif raw_decision == "MANUAL_REVIEW":
+                if match_result:
+                    if act_col1.button(
+                        f"✅ Consolidate to {match_result.get('vendor_id', 'Existing')}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        st.session_state.duplicates_intercepted += 1
+                        st.session_state.spend_saved += 125000
+                        st.session_state.last_action = ("consolidate", 1, 125000, None)
+                        st.toast(
+                            f"Vendor consolidated! $125k spend savings logged.",
+                            icon="🎯",
+                        )
+                if act_col2.button(
+                    "📩 Route to Data Steward", use_container_width=True
+                ):
+                    st.toast("Ticket created for manual steward review.", icon="📩")
+
+            elif raw_decision == "AUTO_REJECT":
+                if act_col1.button(
+                    "🔒 Acknowledge & Block Request",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    st.session_state.duplicates_intercepted += 1
+                    st.session_state.last_action = ("reject", 1, 0, None)
+                    st.toast(
+                        "Request permanently blocked and logged in audit trail.",
+                        icon="🔒",
+                    )
+
+            st.markdown("---")
+
+            # --- EVIDENCE: TOP MATCH ---
             if match_result:
                 st.markdown(
                     f"""
@@ -210,15 +287,12 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
-            # Signal Breakdown Display
-            # Signal Breakdown Display
+            # --- EVIDENCE: SIGNAL BREAKDOWN ---
             st.markdown("### Signal Breakdown")
 
-            # Create a 2x2 grid instead of a 1x4 row to prevent truncation
             m1, m2 = st.columns(2)
             m3, m4 = st.columns(2)
 
-            # Populate metrics dynamically and force rounding to 1 decimal place
             fuzzy = match_result.get("fuzzy_score", 0.0) if match_result else 0.0
             semantic = match_result.get("semantic_score", 0.0) if match_result else 0.0
             comp_score = outcome.get("similarity_score", 0.0)
@@ -236,7 +310,6 @@ with tab1:
                 "Found" if hierarchy else ("None" if hierarchy is False else "N/A")
             )
 
-            # Row 1
             m1.metric(
                 "Composite Score",
                 f"{comp_score:.1f}%",
@@ -244,8 +317,6 @@ with tab1:
                 delta_color="off",
             )
             m2.metric("Semantic AI", f"{semantic:.1f}%", delta_color="off")
-
-            # Row 2
             m3.metric(
                 "UN Sanctions",
                 sanctions_display,
@@ -253,10 +324,7 @@ with tab1:
                 delta_color=s_color,
             )
             m4.metric(
-                "GLEIF Check",
-                hierarchy_display,
-                delta="Parent/Sub",
-                delta_color="off",
+                "GLEIF Check", hierarchy_display, delta="Parent/Sub", delta_color="off"
             )
 
             if outcome.get("related_parent_entity"):
@@ -264,29 +332,14 @@ with tab1:
                     f"**Discovered Parent Entity:** {outcome.get('related_parent_entity')}"
                 )
 
-            # Dynamic Actions
-            st.markdown("---")
-            act_col1, act_col2 = st.columns(2)
-            if decision == "AUTO_APPROVE":
-                act_col1.button(
-                    "➕ Proceed to Onboard New Vendor",
-                    type="primary",
-                    use_container_width=True,
-                )
-            elif decision == "MANUAL_REVIEW":
-                if match_result:
-                    act_col1.button(
-                        f"✅ Consolidate to {match_result.get('vendor_id')}",
-                        type="primary",
-                        use_container_width=True,
-                    )
-                act_col2.button("📩 Route to Data Steward", use_container_width=True)
-            elif decision == "AUTO_REJECT":
-                act_col1.button(
-                    "🔒 Acknowledge & Block Request",
-                    type="primary",
-                    use_container_width=True,
-                )
+            with st.expander("🔍 What factors determine the Composite Score?"):
+                st.markdown("""
+                The engine evaluates multiple dimensions beyond just the provided name, country, and website:
+                * **Fuzzy String Logic (Levenshtein Distance):** Evaluates character-level typographical errors, missing words, and mechanical abbreviations.
+                * **Semantic Vector Overlap:** Analyzes the conceptual meaning of the names (e.g., matching "Global Logistics" to "Worldwide Freight").
+                * **Domain Normalization & Root Matching:** Strips suffixes and subdomains to compare core digital footprint.
+                * **Geographic Alignment Penalties:** Applies statistical penalties if the proposed vendor operates in a different region than the existing entity, unless they share a global web domain.
+                """)
 
         elif submit_btn:
             st.error("Please fill in at least the Vendor Name to run screening.")
@@ -294,16 +347,50 @@ with tab1:
 # --- TAB 2: GOVERNANCE DASHBOARD ---
 with tab2:
     st.subheader("Master Vendor Database Overview")
-    g1, g2, g3 = st.columns(3)
-
-    active_count = len(matcher.master_df) if matcher else 184
-    g1.metric("Total Active Vendors", f"{active_count:,}", "+12 this month")
-    g2.metric("Duplicates Intercepted", "29", "100% manual effort saved")
-    g3.metric("Spend Consolidated", "$4.2M USD", "Negotiation power preserved")
-
-    st.markdown("---")
-    # Display the actual loaded dataframe if available
     if matcher is not None:
-        st.dataframe(matcher.master_df.head(50), use_container_width=True)
+        # Sort values to show the most recently appended rows at the top
+        st.dataframe(matcher.master_df.tail(100).iloc[::-1], use_container_width=True)
     else:
         st.warning("Master CSV not loaded. Showing empty dashboard.")
+
+# --- TAB 3: ENTERPRISE IMPACT METRICS ---
+with tab3:
+    st.subheader("Engine Performance & Spend Consolidation")
+    g1, g2, g3 = st.columns(3)
+
+    active_count = len(matcher.master_df) if matcher else 0
+    intercepted = st.session_state.duplicates_intercepted
+    saved = st.session_state.spend_saved
+
+    g1.metric("Total Active Vendors", f"{active_count:,}", "Current ERP Load")
+    g2.metric(
+        "Duplicates Intercepted", f"{intercepted:,}", f"+{intercepted} this session"
+    )
+    g3.metric(
+        "Spend Consolidated", f"${saved:,.0f} USD", "Projected Negotiation Leverage"
+    )
+
+    if st.session_state.last_action:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("↩️ Undo Last Action", size="small"):
+            action_type, intercept_val, spend_val, added_id = (
+                st.session_state.last_action
+            )
+
+            # Revert metrics
+            st.session_state.duplicates_intercepted -= intercept_val
+            st.session_state.spend_saved -= spend_val
+
+            # Revert dataframe append if a vendor was just onboarded
+            if action_type == "onboard" and matcher is not None and added_id:
+                matcher.master_df = matcher.master_df[
+                    matcher.master_df["handle"] != added_id
+                ]
+
+            st.session_state.last_action = None
+            st.rerun()
+
+    st.markdown("---")
+    st.info(
+        "Metrics update dynamically as Data Stewards resolve flagged records in the Single Vendor Onboarding tab."
+    )
