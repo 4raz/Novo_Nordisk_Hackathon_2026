@@ -18,24 +18,64 @@ import tldextract
 # ---------------------------------------------------------------------------
 _LEGAL_SUFFIXES = [
     # English
-    "ltd", "limited", "inc", "incorporated", "corp", "corporation",
-    "co", "company", "llc", "llp", "plc", "lp",
+    "ltd",
+    "limited",
+    "inc",
+    "incorporated",
+    "corp",
+    "corporation",
+    "co",
+    "company",
+    "llc",
+    "llp",
+    "plc",
+    "lp",
     # German / Austrian / Swiss
-    "gmbh", "mbh", "ag", "kg", "ohg", "ug", "ev", "e v",
+    "gmbh",
+    "mbh",
+    "ag",
+    "kg",
+    "ohg",
+    "ug",
+    "ev",
+    "e v",
     # Scandinavian
-    "as", "a s", "aps", "ab", "oyj", "oy", "hf",
+    "as",
+    "a s",
+    "aps",
+    "ab",
+    "oyj",
+    "oy",
+    "hf",
     # French
-    "sa", "sarl", "sas", "eurl", "sci",
+    "sa",
+    "sarl",
+    "sas",
+    "eurl",
+    "sci",
     # Dutch / Belgian
-    "nv", "bv", "vof", "cv",
+    "nv",
+    "bv",
+    "vof",
+    "cv",
     # Italian / Spanish / Portuguese
-    "srl", "spa", "slu", "sl", "ltda",
+    "srl",
+    "spa",
+    "slu",
+    "sl",
+    "ltda",
     # Indian
-    "pvt", "private",
+    "pvt",
+    "private",
     # Hungarian / Czech / Slovak
-    "kft", "a s", "sro",
+    "kft",
+    "a s",
+    "sro",
     # Other
-    "pty", "pte", "bhd", "sdn",
+    "pty",
+    "pte",
+    "bhd",
+    "sdn",
 ]
 
 LEGAL_SUFFIX_REGEX = re.compile(
@@ -47,30 +87,84 @@ LEGAL_SUFFIX_REGEX = re.compile(
 # Country normalisation
 # ---------------------------------------------------------------------------
 _COUNTRY_NAME_MAP: dict[str, str] = {
-    "india": "IN", "united states": "US", "usa": "US", "us": "US",
-    "united kingdom": "GB", "uk": "GB", "germany": "DE", "deutschland": "DE",
-    "france": "FR", "italy": "IT", "spain": "ES", "netherlands": "NL",
-    "belgium": "BE", "switzerland": "CH", "sweden": "SE", "norway": "NO",
-    "denmark": "DK", "finland": "FI", "austria": "AT", "australia": "AU",
-    "canada": "CA", "japan": "JP", "china": "CN", "brazil": "BR",
-    "south korea": "KR", "korea": "KR", "mexico": "MX", "singapore": "SG",
-    "hong kong": "HK", "ireland": "IE", "portugal": "PT", "poland": "PL",
-    "czech republic": "CZ", "czechia": "CZ", "hungary": "HU",
-    "new zealand": "NZ", "south africa": "ZA", "israel": "IL",
-    "united arab emirates": "AE", "uae": "AE", "saudi arabia": "SA",
-    "taiwan": "TW", "indonesia": "ID", "malaysia": "MY", "philippines": "PH",
-    "thailand": "TH", "vietnam": "VN", "argentina": "AR", "chile": "CL",
-    "colombia": "CO", "peru": "PE", "turkey": "TR", "russia": "RU",
-    "ukraine": "UA", "romania": "RO", "greece": "GR", "luxembourg": "LU",
-    "iceland": "IS", "estonia": "EE", "latvia": "LV", "lithuania": "LT",
-    "croatia": "HR", "serbia": "RS", "slovakia": "SK", "slovenia": "SI",
-    "bulgaria": "BG", "egypt": "EG", "nigeria": "NG", "kenya": "KE",
-    "pakistan": "PK", "bangladesh": "BD", "sri lanka": "LK",
-    "mars": "",  
+    "india": "IN",
+    "united states": "US",
+    "usa": "US",
+    "us": "US",
+    "united kingdom": "GB",
+    "uk": "GB",
+    "germany": "DE",
+    "deutschland": "DE",
+    "france": "FR",
+    "italy": "IT",
+    "spain": "ES",
+    "netherlands": "NL",
+    "belgium": "BE",
+    "switzerland": "CH",
+    "sweden": "SE",
+    "norway": "NO",
+    "denmark": "DK",
+    "finland": "FI",
+    "austria": "AT",
+    "australia": "AU",
+    "canada": "CA",
+    "japan": "JP",
+    "china": "CN",
+    "brazil": "BR",
+    "south korea": "KR",
+    "korea": "KR",
+    "mexico": "MX",
+    "singapore": "SG",
+    "hong kong": "HK",
+    "ireland": "IE",
+    "portugal": "PT",
+    "poland": "PL",
+    "czech republic": "CZ",
+    "czechia": "CZ",
+    "hungary": "HU",
+    "new zealand": "NZ",
+    "south africa": "ZA",
+    "israel": "IL",
+    "united arab emirates": "AE",
+    "uae": "AE",
+    "saudi arabia": "SA",
+    "taiwan": "TW",
+    "indonesia": "ID",
+    "malaysia": "MY",
+    "philippines": "PH",
+    "thailand": "TH",
+    "vietnam": "VN",
+    "argentina": "AR",
+    "chile": "CL",
+    "colombia": "CO",
+    "peru": "PE",
+    "turkey": "TR",
+    "russia": "RU",
+    "ukraine": "UA",
+    "romania": "RO",
+    "greece": "GR",
+    "luxembourg": "LU",
+    "iceland": "IS",
+    "estonia": "EE",
+    "latvia": "LV",
+    "lithuania": "LT",
+    "croatia": "HR",
+    "serbia": "RS",
+    "slovakia": "SK",
+    "slovenia": "SI",
+    "bulgaria": "BG",
+    "egypt": "EG",
+    "nigeria": "NG",
+    "kenya": "KE",
+    "pakistan": "PK",
+    "bangladesh": "BD",
+    "sri lanka": "LK",
+    "mars": "",
 }
 
 
 # ── public helpers ────────────────────────────────────────────────────────
+
 
 def clean_company_name(raw_name: str) -> str:
     """Normalise a company name for fuzzy comparison.
@@ -89,10 +183,13 @@ def clean_company_name(raw_name: str) -> str:
     name = "".join(ch for ch in name if not unicodedata.combining(ch))
 
     name = name.lower()
-    name = re.sub(r"[^\w\s]", " ", name)        # punctuation → space
-    name = LEGAL_SUFFIX_REGEX.sub("", name)      # strip legal suffixes
-    name = re.sub(r"\d{4,}", "", name)           # drop long numeric IDs
+    name = re.sub(r"[^\w\s]", " ", name)  # punctuation → space
+    name = LEGAL_SUFFIX_REGEX.sub("", name)  # strip legal suffixes
+    name = re.sub(r"\d{4,}", "", name)  # drop long numeric IDs
     return re.sub(r"\s+", " ", name).strip()
+
+
+offline_extractor = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def extract_root_domain(raw_url: str) -> str:
@@ -106,7 +203,9 @@ def extract_root_domain(raw_url: str) -> str:
     if "@" in url:
         url = url.split("@")[-1]
 
-    extracted = tldextract.extract(url)
+    # USE THE OFFLINE EXTRACTOR HERE
+    extracted = offline_extractor(url)
+
     if extracted.domain and extracted.suffix:
         return f"{extracted.domain}.{extracted.suffix}".lower()
     return url.lower().strip()

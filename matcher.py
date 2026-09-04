@@ -3,6 +3,7 @@ matcher.py — Intelligent Vendor Matching via Fuzzy Algorithms and Semantic Vec
 """
 
 from __future__ import annotations
+import os
 
 import pandas as pd
 from collections import defaultdict
@@ -10,12 +11,8 @@ from rapidfuzz import fuzz, process
 import torch
 from sentence_transformers import SentenceTransformer, util
 
-from cleaner import (
-    clean_company_name,
-    extract_root_domain,
-    normalize_country,
-    clean_record,
-)
+# Only importing clean_record to clean incoming search payloads
+from cleaner import clean_record
 
 _CSV_FIELD_MAP = {
     "name": "name",
@@ -32,24 +29,37 @@ class AlgorithmicMatcher:
         master_db_path: str = "novo_vendor_master.csv",
         nrows: int = 100_000,
         model_name: str = "all-MiniLM-L6-v2",
+        embeddings_path: str = "vendor_embeddings.pt",
+        cleaned_csv_path: str = "novo_vendor_master_cleaned.csv",
     ):
-        print(f"[matcher] Loading master database ({nrows:,} rows) …")
-        self.master_df = pd.read_csv(
-            master_db_path,
-            nrows=nrows,
-            dtype=str,
-            keep_default_na=False,
-        )
+        import os
 
-        print("[matcher] Cleaning and normalizing master records …")
-        self.master_df["clean_name"] = self.master_df["name"].apply(clean_company_name)
-        self.master_df["clean_domain"] = self.master_df["website"].apply(
-            extract_root_domain
-        )
-        self.master_df["clean_country"] = self.master_df["country_code"].apply(
-            normalize_country
-        )
+        # 1. Load DataFrame & Embeddings
+        if os.path.exists(embeddings_path) and os.path.exists(cleaned_csv_path):
+            print("[matcher] Loading precomputed database and vector tensor...")
+            self.master_df = pd.read_csv(
+                cleaned_csv_path,
+                nrows=nrows,
+                dtype=str,
+                keep_default_na=False,
+            )
+            self.name_embeddings = torch.load(embeddings_path, weights_only=False)
+            print(f"[matcher] Initializing Semantic AI Model ({model_name}) …")
+            self.model = SentenceTransformer(model_name)
+        else:
+            print(f"[matcher] Loading master database ({nrows:,} rows) …")
+            self.master_df = pd.read_csv(
+                master_db_path,
+                nrows=nrows,
+                dtype=str,
+                keep_default_na=False,
+            )
+            print(f"[matcher] Initializing Semantic AI Model ({model_name}) …")
+            self.model = SentenceTransformer(model_name)
+            name_list = self.master_df["clean_name"].tolist()
+            self.name_embeddings = self.model.encode(name_list, convert_to_tensor=True)
 
+        # 2. Build In-Memory Lookups (Required for Candidate Retrieval)
         print("[matcher] Building O(1) domain index …")
         self._domain_index: dict[str, list[int]] = defaultdict(list)
         for idx, domain in enumerate(self.master_df["clean_domain"]):
@@ -57,13 +67,6 @@ class AlgorithmicMatcher:
                 self._domain_index[domain].append(idx)
 
         self._name_list: list[str] = self.master_df["clean_name"].tolist()
-
-        print(f"[matcher] Initializing Semantic AI Model ({model_name}) …")
-        self.model = SentenceTransformer(model_name)
-        # Pre-compute vectors for the entire database at startup for fast query times
-        self.name_embeddings = self.model.encode(
-            self._name_list, convert_to_tensor=True
-        )
 
         print(f"[matcher] System ready — {len(self.master_df):,} vendors indexed.\n")
 
@@ -74,6 +77,7 @@ class AlgorithmicMatcher:
         name_candidates: int = 200,
     ) -> list[dict]:
         """Return the top_k best-matching vendors using multi-signal scoring."""
+        # We still clean the incoming payload so it matches the DB formatting
         cleaned = clean_record(input_payload)
         target_name = cleaned["clean_name"]
         target_domain = cleaned["clean_domain"]
