@@ -262,7 +262,17 @@ with tab1:
             st.markdown("---")
 
             # --- EVIDENCE: TOP MATCH ---
-            if match_result:
+            sanctions_hit = outcome.get("sanctions_hit", False)
+            hierarchy_found = outcome.get("hierarchy_relationship_found", False)
+            comp_score = outcome.get("similarity_score", 0.0)
+
+            # Conditionally render the top match card only if it is a relevant duplicate/ambiguity risk
+            if (
+                match_result
+                and comp_score >= 85.0
+                and not sanctions_hit
+                and not hierarchy_found
+            ):
                 st.markdown(
                     f"""
                 <div class="card" style="border-left: 5px solid {border_color}; margin-bottom: 20px;">
@@ -274,7 +284,7 @@ with tab1:
                 """,
                     unsafe_allow_html=True,
                 )
-            else:
+            elif not match_result:
                 st.markdown(
                     f"""
                 <div class="card" style="border-left: 5px solid {border_color}; margin-bottom: 20px;">
@@ -293,9 +303,7 @@ with tab1:
 
             fuzzy = match_result.get("fuzzy_score", 0.0) if match_result else 0.0
             semantic = match_result.get("semantic_score", 0.0) if match_result else 0.0
-            comp_score = outcome.get("similarity_score", 0.0)
 
-            sanctions_hit = outcome.get("sanctions_hit")
             sanctions_display = (
                 "Flagged"
                 if sanctions_hit
@@ -303,9 +311,10 @@ with tab1:
             )
             s_color = "inverse" if sanctions_hit else "normal"
 
-            hierarchy = outcome.get("hierarchy_relationship_found")
             hierarchy_display = (
-                "Found" if hierarchy else ("None" if hierarchy is False else "N/A")
+                "Found"
+                if hierarchy_found
+                else ("None" if hierarchy_found is False else "N/A")
             )
 
             m1.metric(

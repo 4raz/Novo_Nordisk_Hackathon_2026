@@ -16,6 +16,9 @@ import tldextract
 # ---------------------------------------------------------------------------
 # Legal suffixes — international set
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Legal suffixes — international set
+# ---------------------------------------------------------------------------
 _LEGAL_SUFFIXES = [
     # English
     "ltd",
@@ -76,75 +79,6 @@ _LEGAL_SUFFIXES = [
     "pte",
     "bhd",
     "sdn",
-    # General Corporate Structure & Groupings
-    "company",
-    "companies",
-    "corporation",
-    "corp",
-    "enterprise",
-    "enterprises",
-    "group",
-    "holdings",
-    "holding",
-    "partners",
-    "partnership",
-    "ventures",
-    "venture",
-    "consortium",
-    "syndicate",
-    "trust",
-    "associates",
-    "network",
-    "networks",
-    "agency",
-    "agencies",
-    "organization",
-    "organisation",
-    # Broad Industry & Operational Descriptors
-    "industries",
-    "industry",
-    "technologies",
-    "technology",
-    "tech",
-    "solutions",
-    "services",
-    "systems",
-    "logistics",
-    "manufacturing",
-    "mfg",
-    "trading",
-    "trade",
-    "consulting",
-    "consultants",
-    "management",
-    "development",
-    "labs",
-    "laboratory",
-    "communications",
-    "comms",
-    "productions",
-    "products",
-    "financial",
-    "capital",
-    "investments",
-    "properties",
-    "real estate",
-    "health",
-    "healthcare",
-    "medical",
-    "pharma",
-    "pharmaceuticals",
-    # Scale, Geography & Reach
-    "global",
-    "international",
-    "worldwide",
-    "national",
-    "regional",
-    # Common Connectors & Noise Words
-    "and",
-    "the",
-    "of",
-    "for",
 ]
 
 LEGAL_SUFFIX_REGEX = re.compile(
@@ -252,6 +186,8 @@ def clean_company_name(raw_name: str) -> str:
     name = "".join(ch for ch in name if not unicodedata.combining(ch))
 
     name = name.lower()
+    # NEW: Translate ampersands to 'and' before stripping punctuation
+    name = name.replace("&", " and ")
     name = re.sub(r"[^\w\s]", " ", name)  # punctuation → space
     name = LEGAL_SUFFIX_REGEX.sub("", name)  # strip legal suffixes
     name = re.sub(r"\d{4,}", "", name)  # drop long numeric IDs

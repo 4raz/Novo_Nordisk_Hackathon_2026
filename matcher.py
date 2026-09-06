@@ -131,10 +131,17 @@ class AlgorithmicMatcher:
             if target_name and row_name:
                 set_score = fuzz.token_set_ratio(target_name, row_name)
                 w_score = fuzz.WRatio(target_name, row_name)
-                sort_score = fuzz.token_sort_ratio(target_name, row_name)
 
-                # Base algorithmic score
+                # Base algorithmic score favors subsets (allows "XYZ" to match "XYZ Industries")
                 base_alg = (set_score * 0.65) + (w_score * 0.35)
+
+                # NEW: Compound Word Fix (Removes spaces to match "Bluetech" with "Blue Tech")
+                spaceless_score = fuzz.ratio(
+                    target_name.replace(" ", ""), row_name.replace(" ", "")
+                )
+
+                # Take the highest score between the subset logic and the spaceless logic
+                base_alg = max(base_alg, spaceless_score)
 
                 # Token Coverage Penalty to prevent single-word fragments from winning
                 target_tokens = set(target_name.lower().split())
@@ -152,34 +159,48 @@ class AlgorithmicMatcher:
                     semantic_score = 0.0
 
                 final_name_score = max(algorithmic_name_score, semantic_score)
-            else:
-                final_name_score = 0.0
-                algorithmic_name_score = 0.0
-                semantic_score = 0.0
 
             # B. Domain Scoring & Dynamic Weighting
             if target_domain and row_domain:
                 if target_domain == row_domain:
                     domain_score = 100.0
+                    # Golden Signal: If domains match exactly, guarantee a high composite score
+                    # to override acronym/name discrepancies (e.g. IBM vs International Business Machines)
+                    base_score = max((final_name_score * 0.30) + 70.0, 96.0)
                 else:
                     target_base = target_domain.split(".")[0]
                     row_base = row_domain.split(".")[0]
                     domain_score = fuzz.ratio(target_base, row_base) * 0.5
-
-                base_score = (final_name_score * 0.55) + (domain_score * 0.45)
+                    base_score = (final_name_score * 0.55) + (domain_score * 0.45)
             else:
                 domain_score = 0.0
-                # Shift 100% of the weight to the name if domain is missing
                 base_score = final_name_score
 
-            # C. Proportional Country Penalty
+            # C. Proportional Country Penalty & Global Tenant Exemption
             country_multiplier = 1.0
-            if target_country and row_country:
+
+            # EXEMPTION: If they share an exact domain, they are a verified global subsidiary
+            # (e.g., IBM India & IBM US). Waive all geographic penalties.
+            if target_domain and row_domain and target_domain == row_domain:
+                country_multiplier = 1.0
+
+            # PENALTY: Penalize geographic mismatches for vendors without shared domains
+            elif target_country and row_country:
                 if target_country != row_country:
                     country_multiplier = 0.85
 
+            # PENALTY: If one record is missing a country entirely, apply a minor unverified penalty
+            # so sparse records (like alpha-beta) don't unfairly outscore fully populated ones.
+            elif bool(target_country) != bool(row_country):
+                country_multiplier = 0.95
+
             # D. Final Composite Calculation
             composite = base_score * country_multiplier
+
+            # Silent Tie-Breaker: Bypasses the cleaner to see which raw string matches best
+            raw_input = str(input_payload.get("name", "")).lower()
+            raw_row = str(row["name"]).lower()
+            raw_tiebreaker = fuzz.ratio(raw_input, raw_row)
 
             results.append(
                 {
@@ -194,8 +215,12 @@ class AlgorithmicMatcher:
                     "semantic_score": round(semantic_score, 2),
                     "fuzzy_score": round(algorithmic_name_score, 2),
                     "domain_score": round(domain_score, 2),
+                    "raw_tiebreaker": raw_tiebreaker,  # Added strictly for sorting ties
                 }
             )
 
-        results.sort(key=lambda r: r["composite_score"], reverse=True)
+        # Sort by Composite Score first. If tied, the raw string ratio breaks the tie.
+        results.sort(
+            key=lambda r: (r["composite_score"], r["raw_tiebreaker"]), reverse=True
+        )
         return results[:top_k]
