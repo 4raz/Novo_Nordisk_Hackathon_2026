@@ -133,6 +133,7 @@ with tab1:
                     "Netherlands",
                     "Norway",
                     "Poland",
+                    "Russia",
                     "Singapore",
                     "South Africa",
                     "South Korea",
@@ -269,7 +270,7 @@ with tab1:
             # Conditionally render the top match card only if it is a relevant duplicate/ambiguity risk
             if (
                 match_result
-                and comp_score >= 85.0
+                and comp_score >= 80.0
                 and not sanctions_hit
                 and not hierarchy_found
             ):
@@ -341,11 +342,11 @@ with tab1:
 
             with st.expander("🔍 What factors determine the Composite Score?"):
                 st.markdown("""
-                The engine evaluates multiple dimensions beyond just the provided name, country, and website:
-                * **Fuzzy String Logic (Levenshtein Distance):** Evaluates character-level typographical errors, missing words, and mechanical abbreviations.
-                * **Semantic Vector Overlap:** Analyzes the conceptual meaning of the names (e.g., matching "Global Logistics" to "Worldwide Freight").
-                * **Domain Normalization & Root Matching:** Strips suffixes and subdomains to compare core digital footprint.
-                * **Geographic Alignment Penalties:** Applies statistical penalties if the proposed vendor operates in a different region than the existing entity, unless they share a global web domain.
+                The engine evaluates multiple dimensions to prevent duplicates:
+                * **Fuzzy String Logic:** Detects typographical errors, missing words, and compound spacing variations (e.g., "Bluetech" vs. "Blue Tech").
+                * **Semantic AI:** Understands business context and expands acronyms (e.g., matching "IBM" to "International Business Machines").
+                * **Domain Verification:** A shared root web domain acts as a verified corporate linkage, overriding name discrepancies.
+                * **Geographic Alignment:** Applies statistical penalties if the proposed vendor operates in a different region than the master record without sharing a global domain.
                 """)
 
         elif submit_btn:
@@ -355,8 +356,8 @@ with tab1:
 with tab2:
     st.subheader("Master Vendor Database Overview")
     if matcher is not None:
-        # Sort values to show the most recently appended rows at the top
-        st.dataframe(matcher.master_df.tail(100).iloc[::-1], width="stretch")
+        # Display the top records (which contain your primary test cases)
+        st.dataframe(matcher.master_df.head(500), width="stretch")
     else:
         st.warning("Master CSV not loaded. Showing empty dashboard.")
 

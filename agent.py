@@ -1,5 +1,5 @@
 """
-agent.py — Agentic validation layer for the Vendor Name Resolution pipeline.
+agent.py — Agentic validation layer with Omnipotent AI Agency & Learned Context.
 """
 
 from __future__ import annotations
@@ -165,13 +165,18 @@ def _get_azure_client() -> "AzureOpenAI | None":
         return None
 
 
-_SYSTEM_PROMPT = """You are an enterprise procurement compliance analyst for Novo Nordisk. 
-Evaluate new vendor onboarding requests against an internal vendor-master match and external risk registries.
+_SYSTEM_PROMPT = """You are an enterprise Master Data Management (MDM) and compliance analyst for Novo Nordisk. 
+Your primary directive is to PREVENT DUPLICATE SPENDING and ensure regulatory compliance.
 
-Rules for interpreting the external data:
-1. Watchlist screening: a common or generic name can trigger a false positive. Only set found_sanction_risk to true if the data genuinely points to THIS vendor.
-2. Corporate hierarchy: Only flag found_hierarchy_risk as true if the GLEIF data explicitly identifies a corporate parent or subsidiary relationship.
-3. Master Data Duplicates: Use your contextual judgment to determine if the internal database match represents a true duplicate, a regional franchise, or a false positive based on the name, domain, and country.
+General Reasoning Guidelines (Use this to override external API gaps):
+- Watchlist False Positives: Global conglomerates and common acronyms frequently trigger watchlist hits due to name collisions. If a sanction hit likely belongs to a well-known multinational rather than a specific bad actor, downgrade the decision to MANUAL_REVIEW rather than an automatic block, and explicitly dismiss the false positive in your reasoning.
+- Geographic Sanction Nuance: Consider the operating country. A branch of a flagged entity operating in a heavily sanctioned region is a hard block, while branches in highly regulated European/US markets may warrant a MANUAL_REVIEW instead.
+- Incomplete Registries: Official corporate registries are often missing subsidiary linkages. Use your broad knowledge of global business. If you know the proposed vendor is a subsidiary of a major parent company, explicitly state the parent company's name in your justification and in related_parent_entity, recommending MANUAL_REVIEW to consolidate spend.
+- Algorithmic Dismissal (Ignoring Noise): Mathematical matching isn't perfect. If the provided internal master-data match is clearly unrelated (e.g., a massive multinational matching a random local company due to acronym similarities), explicitly state that the internal match is a false positive and dismiss it in your reasoning. Do not treat it as a duplicate.
+
+Rules for evaluating data:
+1. THE DUPLICATE RULE: If you determine the proposed vendor is a true duplicate, regional franchise, or highly similar entity to the internal master match, you MUST recommend "MANUAL_REVIEW" or "AUTO_REJECT". You MUST explicitly name the existing matched vendor in your justification. NEVER recommend "AUTO_APPROVE" for a matching entity.
+2. You have the ultimate authority to recommend AUTO_APPROVE, MANUAL_REVIEW, or AUTO_REJECT regardless of the underlying math or raw watchlist data.
 
 Output requirement:
 Write business_justification in plain English for a non-technical data steward, as short markdown bullet points. Never mention technical metrics, percentages, or algorithmic weights.
@@ -277,28 +282,36 @@ def _apply_routing_rules(
     llm_recommended_decision: "str | None" = None,
 ) -> tuple[str, str, list[str]]:
 
+    # Priority 1: Sanctions
     if sanctions_hit:
-        decision = "AUTO_REJECT"
-        notes = [
-            "Priority 1: confirmed sanctions/watchlist hit -- blocks the vendor regardless of any other signal."
-        ]
-        justification = f"**🛑 CRITICAL COMPLIANCE BLOCK:** A sanctions or watchlist risk was identified for this vendor; onboarding is not permitted.\n\n{llm_justification}"
+        if llm_recommended_decision == "MANUAL_REVIEW":
+            decision = "MANUAL_REVIEW"
+            notes = [
+                "Priority 1 (Downgraded): Sanction hit detected, but AI explicitly requested MANUAL_REVIEW for verification."
+            ]
+            justification = f"**⚠️ COMPLIANCE REVIEW:** A sanctions risk was identified, but requires human verification based on context.\n\n{llm_justification}"
+        else:
+            decision = "AUTO_REJECT"
+            notes = ["Priority 1: confirmed sanctions/watchlist hit."]
+            justification = f"**🛑 CRITICAL COMPLIANCE BLOCK:** A sanctions or watchlist risk was identified for this vendor.\n\n{llm_justification}"
 
-    elif hierarchy_found:
+    # Priority 2: Hierarchy (AI can organically generate related_parent if GLEIF fails)
+    elif hierarchy_found or related_parent:
         decision = "MANUAL_REVIEW"
         parent_text = related_parent if related_parent else "a corporate parent"
         notes = [
-            f"Priority 2: a parent-subsidiary relationship was identified to {parent_text}. Overrides duplicate check."
+            f"Priority 2: AI or external registry identified a corporate relationship to {parent_text}."
         ]
-        justification = f"**⚠️ HIERARCHY IDENTIFIED:** Global records indicate this entity is linked to **{parent_text}**. Route to a data steward to determine whether its parent already exists (in which case we consolidate spending) or to start a new entry under its parent's name.\n\n{llm_justification}"
+        justification = f"**⚠️ HIERARCHY IDENTIFIED:** Records indicate this entity is linked to **{parent_text}**. Route to a data steward for spending consolidation.\n\n{llm_justification}"
 
+    # Priority 3: Duplicates
     elif composite_score >= 95.0:
         if llm_recommended_decision == "MANUAL_REVIEW":
             decision = "MANUAL_REVIEW"
             notes = [
                 f"Priority 3 (Downgraded): Score {composite_score:.1f}% is a duplicate, but AI contextually requested MANUAL_REVIEW."
             ]
-            justification = f"**⚠️ REVIEW REQUIRED:** This request is a near-identical match to an existing record, but requires contextual human verification.\n\n{llm_justification}"
+            justification = f"**⚠️ REVIEW REQUIRED:** This request is a near-identical match to an existing record, but requires contextual verification.\n\n{llm_justification}"
         else:
             decision = "AUTO_REJECT"
             notes = [
@@ -306,18 +319,27 @@ def _apply_routing_rules(
             ]
             justification = f"**🛑 DUPLICATE BLOCKED:** This request is a near-identical match to an existing vendor-master record.\n\n{llm_justification}"
 
-    elif composite_score >= 85.0:
-        decision = "MANUAL_REVIEW"
-        notes = [
-            f"Priority 4: internal similarity score {composite_score:.1f}% is in the 85-94.9% ambiguity band."
-        ]
-        justification = f"**⚠️ REVIEW REQUIRED:** This proposed vendor shares significant overlap with an existing record; manual verification is needed before proceeding.\n\n{llm_justification}"
+    # Priority 4: Ambiguity Band
+    elif composite_score >= 80.0:
+        if llm_recommended_decision == "AUTO_APPROVE":
+            decision = "AUTO_APPROVE"
+            notes = [
+                f"Priority 4 (Downgraded): AI determined the {composite_score:.1f}% internal match is a false positive and cleared it."
+            ]
+            justification = f"**✅ APPROVED:** The AI agent evaluated the internal similarity match and confirmed it is a distinct, safe entity.\n\n{llm_justification}"
+        else:
+            decision = "MANUAL_REVIEW"
+            notes = [
+                f"Priority 4: internal similarity score {composite_score:.1f}% is in the ambiguity band."
+            ]
+            justification = f"**⚠️ REVIEW REQUIRED:** This proposed vendor shares significant overlap with an existing record.\n\n{llm_justification}"
 
+    # Priority 5: Clear
     else:
         if llm_recommended_decision == "MANUAL_REVIEW":
             decision = "MANUAL_REVIEW"
             notes = [
-                f"Priority 5 (Upgraded): Score {composite_score:.1f}% cleared deterministic rules, but AI detected nuanced risk and requested MANUAL_REVIEW."
+                f"Priority 5 (Upgraded): AI detected nuanced risk despite low mathematical scores and requested MANUAL_REVIEW."
             ]
             justification = f"**⚠️ REVIEW REQUIRED:** The automated AI agent flagged contextual ambiguities requiring steward review.\n\n{llm_justification}"
         else:
@@ -326,16 +348,6 @@ def _apply_routing_rules(
                 "Priority 5: no sanctions, hierarchy, or duplicate-score risk detected -- cleared."
             ]
             justification = f"**✅ APPROVED:** No duplicates, sanctions, or corporate-hierarchy conflicts were detected for this vendor.\n\n{llm_justification}"
-
-    if llm_recommended_decision in VALID_DECISIONS:
-        if llm_recommended_decision != decision:
-            notes.append(
-                f"Reasoning engine suggested {llm_recommended_decision}; deterministic rules enforced {decision} instead."
-            )
-        else:
-            notes.append(
-                f"Reasoning engine's suggested decision ({llm_recommended_decision}) matches the deterministic outcome."
-            )
 
     return decision, justification.strip(), notes
 
@@ -350,18 +362,55 @@ def run_validation(vendor_payload: dict, match_result: "dict | None" = None) -> 
 
     target_name = (vendor_payload or {}).get("name", "") or ""
 
+    # 1. Gather O(1) External Data
     sanctions_data = query_opensanctions(target_name)
     gleif_data = query_gleif_hierarchy(target_name)
 
+    raw_sanctions = sanctions_data.get("sanctions_hit")
+    raw_hierarchy = gleif_data.get("hierarchy_found")
+
+    # 2. Gatekeeper Logic: AI Sandbox wakes up for Sanctions, Hierarchy, or Ambiguity (Now 80.0%)
+    requires_ai_review = False
+    if raw_sanctions or raw_hierarchy:
+        requires_ai_review = True
+    elif 80.0 <= composite_score < 95.0:
+        requires_ai_review = True
+
+    # 3. Deterministic Fast-Tracks (AI Bypassed)
+    if not requires_ai_review:
+        if composite_score >= 95.0:
+            return {
+                "decision": "AUTO_REJECT",
+                "business_justification": f"**🛑 DUPLICATE BLOCKED:** The system mathematically confirmed this request as an exact master-data duplicate ({composite_score:.1f}%).\n\n- *Automated Fast-Track:* Engine bypassed AI reasoning for processing efficiency.",
+                "similarity_score": round(composite_score, 2),
+                "sanctions_hit": False,
+                "hierarchy_relationship_found": False,
+                "related_parent_entity": None,
+                "safety_net_notes": [
+                    "Priority 3: Fast-tracked block due to >= 95% similarity and no external risks."
+                ],
+            }
+        else:
+            return {
+                "decision": "AUTO_APPROVE",
+                "business_justification": f"**✅ APPROVED:** The system verified no duplication risk ({composite_score:.1f}%), no sanctions, and no corporate-hierarchy conflicts.\n\n- *Automated Fast-Track:* Engine bypassed AI reasoning for processing efficiency.",
+                "similarity_score": round(composite_score, 2),
+                "sanctions_hit": False,
+                "hierarchy_relationship_found": False,
+                "related_parent_entity": None,
+                "safety_net_notes": [
+                    "Priority 5: Fast-tracked approval due to low similarity and clear external checks."
+                ],
+            }
+
+    # 4. The Sandbox (Wake up the AI)
     client = _get_azure_client()
 
     if client is None:
-        sanctions_hit = sanctions_data.get("sanctions_hit")
-        hierarchy_found = gleif_data.get("hierarchy_found")
-        related_parent = gleif_data.get("matched_entity") if hierarchy_found else None
+        related_parent = gleif_data.get("matched_entity") if raw_hierarchy else None
         llm_text = "- Automated reasoning engine is offline; this result reflects deterministic rule-based screening only."
         decision, justification, notes = _apply_routing_rules(
-            composite_score, sanctions_hit, hierarchy_found, related_parent, llm_text
+            composite_score, raw_sanctions, raw_hierarchy, related_parent, llm_text
         )
         notes.append(
             "Azure OpenAI credentials not configured -- ran in deterministic offline mode."
@@ -370,8 +419,8 @@ def run_validation(vendor_payload: dict, match_result: "dict | None" = None) -> 
             "decision": decision,
             "business_justification": justification,
             "similarity_score": round(composite_score, 2),
-            "sanctions_hit": sanctions_hit,
-            "hierarchy_relationship_found": hierarchy_found,
+            "sanctions_hit": raw_sanctions,
+            "hierarchy_relationship_found": raw_hierarchy,
             "related_parent_entity": related_parent,
             "safety_net_notes": notes,
         }
@@ -386,37 +435,35 @@ def run_validation(vendor_payload: dict, match_result: "dict | None" = None) -> 
     )
 
     if llm_data is None:
-        if sanctions_data.get("sanctions_hit") is True:
+        if raw_sanctions is True:
             decision = "AUTO_REJECT"
-            justification = "**🛑 CRITICAL COMPLIANCE BLOCK:** A sanctions or watchlist risk was identified for this vendor; onboarding is not permitted.\n\n- The automated reasoning engine was unavailable; this block is based on the compliance watchlist check alone."
+            justification = "**🛑 CRITICAL COMPLIANCE BLOCK:** A sanctions or watchlist risk was identified for this vendor.\n\n- The AI was unavailable; blocked via deterministic fallback."
             notes = [
-                "Priority 1: confirmed sanctions/watchlist hit -- blocks the vendor regardless of the reasoning-engine failure."
+                "Priority 1: confirmed sanctions hit -- blocks the vendor regardless of AI failure."
             ]
         else:
             decision = "MANUAL_REVIEW"
-            justification = "**⚠️ REVIEW REQUIRED:** The automated reasoning engine could not complete this evaluation, so this request is routed to a data steward as a precaution.\n\n- Please verify manually against the internal match and any compliance/hierarchy signals."
+            justification = "**⚠️ REVIEW REQUIRED:** The reasoning engine timed out. Routed to manual review as a precaution."
             notes = [
-                "Automated reasoning engine failed or returned an unparseable response; routed to manual review as a precaution."
+                "AI failed or returned unparseable response; routed to manual review."
             ]
         return {
             "decision": decision,
             "business_justification": justification,
             "similarity_score": round(composite_score, 2),
-            "sanctions_hit": sanctions_data.get("sanctions_hit"),
-            "hierarchy_relationship_found": gleif_data.get("hierarchy_found"),
+            "sanctions_hit": raw_sanctions,
+            "hierarchy_relationship_found": raw_hierarchy,
             "related_parent_entity": (
-                gleif_data.get("matched_entity")
-                if gleif_data.get("hierarchy_found")
-                else None
+                gleif_data.get("matched_entity") if raw_hierarchy else None
             ),
             "safety_net_notes": notes,
         }
 
     sanctions_hit = _merge_risk_signal(
-        sanctions_data.get("sanctions_hit"), llm_data.get("found_sanction_risk")
+        raw_sanctions, llm_data.get("found_sanction_risk")
     )
     hierarchy_found = _merge_risk_signal(
-        gleif_data.get("hierarchy_found"), llm_data.get("found_hierarchy_risk")
+        raw_hierarchy, llm_data.get("found_hierarchy_risk")
     )
     related_parent = llm_data.get("related_parent_entity") or (
         gleif_data.get("matched_entity") if hierarchy_found else None
