@@ -74,10 +74,9 @@ class AlgorithmicMatcher:
         self,
         input_payload: dict,
         top_k: int = 5,
-        name_candidates: int = 200,
+        pool_size: int = 500,
     ) -> list[dict]:
-        """Return the top_k best-matching vendors using multi-signal scoring."""
-        # We still clean the incoming payload so it matches the DB formatting
+        """Parallel Sandbox: Retrieves top candidates via AI and Fuzzy simultaneously."""
         cleaned = clean_record(input_payload)
         target_name = cleaned["clean_name"]
         target_domain = cleaned["clean_domain"]
@@ -86,35 +85,41 @@ class AlgorithmicMatcher:
         if not target_name and not target_domain:
             return []
 
-        # 1. Fast Candidate Blocking
-        domain_hits: set[int] = set()
-        if target_domain and target_domain in self._domain_index:
-            domain_hits = set(self._domain_index[target_domain])
+        # --- STAGE 1: PARALLEL GLOBAL RETRIEVAL ---
+        candidate_indices = set()
 
-        name_hits: set[int] = set()
+        # 1A. O(1) Exact Domain Hits
+        if target_domain and target_domain in self._domain_index:
+            candidate_indices.update(self._domain_index[target_domain])
+
+        # 1B. Global Semantic AI Search
+        target_embedding = None
+        cos_scores = None
         if target_name:
-            # fuzz.WRatio handles case, length differences, and substring matches better than token_sort_ratio
+            target_embedding = self.model.encode([target_name], convert_to_tensor=True)
+            cos_scores = util.cos_sim(target_embedding, self.name_embeddings)[0]
+
+            top_semantic = cos_scores.topk(
+                k=min(pool_size, len(self.master_df))
+            ).indices.tolist()
+            candidate_indices.update(top_semantic)
+
+        # 1C. Global Lexical Search
+        if target_name:
             fuzzy_results = process.extract(
                 target_name,
                 self._name_list,
                 scorer=fuzz.WRatio,
-                limit=name_candidates,
-                score_cutoff=50,
+                limit=pool_size,
+                score_cutoff=40,
             )
-            name_hits = {idx for _, _, idx in fuzzy_results}
+            top_fuzzy = [idx for _, _, idx in fuzzy_results]
+            candidate_indices.update(top_fuzzy)
 
-        candidate_indices = list(domain_hits | name_hits)
         if not candidate_indices:
             return []
 
-        # 2. Compute Target Vector
-        target_embedding = (
-            self.model.encode([target_name], convert_to_tensor=True)
-            if target_name
-            else None
-        )
-
-        # 3. Deep Scoring Execution
+        # --- STAGE 2: DEEP COMPOSITE SCORING ON THE SANDBOX ---
         results: list[dict] = []
         for idx in candidate_indices:
             row = self.master_df.iloc[idx]
@@ -124,52 +129,61 @@ class AlgorithmicMatcher:
 
             # A. Advanced String Similarities
             if target_name and row_name:
-                # token_set_ratio perfectly aligns strings with extra trailing/leading words
                 set_score = fuzz.token_set_ratio(target_name, row_name)
-                # WRatio anchors formatting shifts and general character alignments
                 w_score = fuzz.WRatio(target_name, row_name)
-                algorithmic_name_score = (set_score * 0.6) + (w_score * 0.4)
+                sort_score = fuzz.token_sort_ratio(target_name, row_name)
 
-                # B. Semantic Vector Similarity
-                row_embedding = self.name_embeddings[idx].unsqueeze(0)
-                semantic_score = (
-                    util.cos_sim(target_embedding, row_embedding).item() * 100.0
-                )
+                # Base algorithmic score
+                base_alg = (set_score * 0.65) + (w_score * 0.35)
 
-                # Use semantic score if it detects an acronym/alias the string logic missed
+                # Token Coverage Penalty to prevent single-word fragments from winning
+                target_tokens = set(target_name.lower().split())
+                row_tokens = set(row_name.lower().split())
+
+                if len(target_tokens) > 1 and len(row_tokens) == 1:
+                    base_alg *= 0.88
+
+                algorithmic_name_score = base_alg
+
+                # Fetch semantic score using the standard target vector
+                if target_embedding is not None and cos_scores is not None:
+                    semantic_score = cos_scores[idx].item() * 100.0
+                else:
+                    semantic_score = 0.0
+
                 final_name_score = max(algorithmic_name_score, semantic_score)
             else:
                 final_name_score = 0.0
                 algorithmic_name_score = 0.0
                 semantic_score = 0.0
 
-            # C. Domain Scoring
+            # B. Domain Scoring & Dynamic Weighting
             if target_domain and row_domain:
                 if target_domain == row_domain:
                     domain_score = 100.0
                 else:
-                    # Strip the TLD (.com, .net) to prevent artificial overlap
                     target_base = target_domain.split(".")[0]
                     row_base = row_domain.split(".")[0]
-
-                    # Apply a severe multiplier penalty; mismatched domains strongly suggest distinct entities
                     domain_score = fuzz.ratio(target_base, row_base) * 0.5
+
+                base_score = (final_name_score * 0.55) + (domain_score * 0.45)
             else:
                 domain_score = 0.0
+                # Shift 100% of the weight to the name if domain is missing
+                base_score = final_name_score
 
-            # D. Proportional Country Penalty
+            # C. Proportional Country Penalty
             country_multiplier = 1.0
             if target_country and row_country:
                 if target_country != row_country:
-                    country_multiplier = 0.85  # 15% penalty for differing countries
+                    country_multiplier = 0.85
 
-            # E. Final Composite Score
-            base_score = (final_name_score * 0.55) + (domain_score * 0.45)
+            # D. Final Composite Calculation
             composite = base_score * country_multiplier
 
             results.append(
                 {
-                    "vendor_id": row.get("handle", f"VN-{idx}"),
+                    "vendor_id": row.get("vendor_id", f"VN-{idx}"),
                     "name": row["name"],
                     "website": row.get("website", ""),
                     "country_code": row.get("country_code", ""),

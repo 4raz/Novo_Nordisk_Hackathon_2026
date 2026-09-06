@@ -57,7 +57,7 @@ if "last_action" not in st.session_state:
 with st.sidebar:
     st.image(
         "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Novo_Nordisk_Logo.svg/512px-Novo_Nordisk_Logo.svg.png",
-        use_container_width=True,
+        width="stretch",
     )
     st.title("Governance Panel")
     st.markdown("---")
@@ -148,7 +148,7 @@ with tab1:
                 "Website / Domain", placeholder="e.g., edgeverve.com"
             )
             submit_btn = st.form_submit_button(
-                "Run Autonomous Screening", use_container_width=True
+                "Run Autonomous Screening", width="stretch"
             )
 
     with col_out:
@@ -190,7 +190,7 @@ with tab1:
                 st.success(f"✅ **{display_decision}**")
                 border_color = "green"
 
-            st.info(f"**Agent Reasoner:** {justification}")
+            st.info(f"**Agent Reasoner:**\n\n{justification}")
 
             if outcome.get("safety_net_notes"):
                 for note in outcome["safety_net_notes"]:
@@ -203,7 +203,7 @@ with tab1:
                 if act_col1.button(
                     "➕ Proceed to Onboard New Vendor",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     if matcher:
                         new_vendor_id = f"VN-99{len(matcher.master_df) + 1:03d}"
@@ -234,7 +234,7 @@ with tab1:
                     if act_col1.button(
                         f"✅ Consolidate to {match_result.get('vendor_id', 'Existing')}",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state.duplicates_intercepted += 1
                         st.session_state.spend_saved += 125000
@@ -243,16 +243,14 @@ with tab1:
                             f"Vendor consolidated! $125k spend savings logged.",
                             icon="🎯",
                         )
-                if act_col2.button(
-                    "📩 Route to Data Steward", use_container_width=True
-                ):
+                if act_col2.button("📩 Route to Data Steward", width="stretch"):
                     st.toast("Ticket created for manual steward review.", icon="📩")
 
             elif raw_decision == "AUTO_REJECT":
                 if act_col1.button(
                     "🔒 Acknowledge & Block Request",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state.duplicates_intercepted += 1
                     st.session_state.last_action = ("reject", 1, 0, None)
@@ -349,7 +347,7 @@ with tab2:
     st.subheader("Master Vendor Database Overview")
     if matcher is not None:
         # Sort values to show the most recently appended rows at the top
-        st.dataframe(matcher.master_df.tail(100).iloc[::-1], use_container_width=True)
+        st.dataframe(matcher.master_df.tail(100).iloc[::-1], width="stretch")
     else:
         st.warning("Master CSV not loaded. Showing empty dashboard.")
 
